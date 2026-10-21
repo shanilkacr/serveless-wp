@@ -144,7 +144,7 @@ if (!empty($_SERVER['HTTP_X_SERVERLESSWP_SQLITE_FILE'])) {
 
   // Auto-cron can cause db race conditions on these urls, don't bother with it.
   if (strpos($_SERVER['REQUEST_URI'], 'wp-admin') !== false || strpos($_SERVER['REQUEST_URI'], 'wp-login') !== false) {
-    define('DISABLE_WP_CRON', true);
+    define('DISABLE_WP_CRON', false);
   }
 
   // Increase time between cron runs (2 hours) to reduce DB writes.
