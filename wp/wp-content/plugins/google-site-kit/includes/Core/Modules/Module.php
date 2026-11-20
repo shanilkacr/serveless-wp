@@ -436,12 +436,15 @@ abstract class Module {
 	 *
 	 * @since 1.0.0
 	 * @since 1.190.0 Validates the parameters of a `Schema_Aware_Datapoint` before running it.
+	 * @since 1.191.0 Passes the Google client the request is sent with to a closure request.
+	 * @since 1.192.0 Leaves out the reconnect URL when a shared data request fails.
 	 *
 	 * @param Data_Request $data Data request object.
 	 * @return mixed Data on success, or WP_Error on failure.
 	 */
 	final protected function execute_data_request( Data_Request $data ) {
-		$restore_defers = array();
+		$restore_defers    = array();
+		$is_shared_request = false;
 		try {
 			$datapoint = $this->get_datapoint_definition( "{$data->method}:{$data->datapoint}" );
 
@@ -459,7 +462,8 @@ abstract class Module {
 			$this->validate_base_scopes( $oauth_client );
 
 			// In order for a request to leverage a client other than the default
-			// it must return a RequestInterface (Google Services return this when defer = true).
+			// it must return a RequestInterface (Google Services return this when defer = true),
+			// or a closure that sends its requests with the client it is called with.
 			// If not deferred, the request will be executed immediately with the client
 			// the service instance was instantiated with, which will always be the
 			// default client, configured for the current user and provided in `get_service`.
@@ -469,7 +473,8 @@ abstract class Module {
 			// the default instance is what services are setup with.
 			$restore_defers[] = $this->get_client()->withDefer( true );
 			if ( $this->authentication->get_oauth_client() !== $oauth_client ) {
-				$restore_defers[] = $oauth_client->get_client()->withDefer( true );
+				$is_shared_request = true;
+				$restore_defers[]  = $oauth_client->get_client()->withDefer( true );
 
 				$current_user = wp_get_current_user();
 			}
@@ -483,7 +488,7 @@ abstract class Module {
 			if ( is_wp_error( $request ) ) {
 				return $request;
 			} elseif ( $request instanceof Closure ) {
-				$response = $request();
+				$response = $request( $oauth_client->get_client() );
 			} elseif ( $request instanceof RequestInterface ) {
 				$response = $oauth_client->get_client()->execute( $request );
 			} else {
@@ -494,7 +499,18 @@ abstract class Module {
 				);
 			}
 		} catch ( Exception $e ) {
-			return $this->exception_to_error( $e, $data->datapoint );
+			$error = $this->exception_to_error( $e, $data->datapoint );
+
+			// The request used the module owner's token, so reconnecting the current user can't fix it.
+			if ( $is_shared_request ) {
+				$error_data = $error->get_error_data();
+				if ( is_array( $error_data ) && isset( $error_data['reconnectURL'] ) ) {
+					unset( $error_data['reconnectURL'] );
+					$error->add_data( $error_data );
+				}
+			}
+
+			return $error;
 		} finally {
 			foreach ( $restore_defers as $restore_defer ) {
 				$restore_defer();
@@ -758,6 +774,8 @@ abstract class Module {
 	 * @since 1.0.0
 	 * @since 1.49.0 Uses the new `Google_Proxy::setup_url_v2` method when the `serviceSetupV2` feature flag is enabled.
 	 * @since 1.70.0 $datapoint parameter is optional.
+	 * @since 1.191.0 Reconnect URL for proxy code exceptions points at setup start on the site.
+	 * @since 1.192.0 Leaves out the reconnect URL for proxy code exceptions when the user can't set up Site Kit.
 	 *
 	 * @param Exception $e         Exception object.
 	 * @param string    $datapoint Optional. Datapoint originally requested. Default is an empty string.
@@ -784,18 +802,15 @@ abstract class Module {
 				$reason = $errors[0]['reason'];
 			}
 		} elseif ( $e instanceof Google_Proxy_Code_Exception ) {
-			$status        = 401;
-			$code          = $message;
-			$auth_client   = $this->authentication->get_oauth_client();
-			$message       = $auth_client->get_error_message( $code );
-			$google_proxy  = $this->authentication->get_google_proxy();
-			$credentials   = $this->authentication->credentials()->get();
-			$params        = array(
-				'code'    => $e->getAccessCode(),
-				'site_id' => ! empty( $credentials['oauth2_client_id'] ) ? $credentials['oauth2_client_id'] : '',
-			);
-			$params        = $google_proxy->add_setup_step_from_error_code( $params, $code );
-			$reconnect_url = $google_proxy->setup_url( $params );
+			// Reconnect through a new setup, not the access code: its proxy session has no nonce or `state` for the site to check.
+			$status      = 401;
+			$code        = $message;
+			$auth_client = $this->authentication->get_oauth_client();
+			$message     = $auth_client->get_error_message( $code );
+			// Only offer a reconnect URL that the setup start action will accept.
+			if ( current_user_can( Permissions::SETUP ) ) {
+				$reconnect_url = $this->authentication->get_proxy_setup_url();
+			}
 		}
 
 		if ( empty( $code ) ) {
