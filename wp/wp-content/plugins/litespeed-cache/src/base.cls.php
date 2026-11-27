@@ -31,7 +31,7 @@ class Base extends Root {
 	const _VER           = '_version'; // Not set-able
 	const HASH           = 'hash'; // Not set-able
 	const O_AUTO_UPGRADE = 'auto_upgrade';
-	const O_API_KEY      = 'api_key'; // Deprecated since v6.4. TODO: Will drop after v8 (still need to keep for v7 upgrade conf usage as v6.5.4 has a major user base)
+	const O_API_KEY      = 'api_key'; // Deprecated since v6.4; retained until after v8 to protect stored legacy values, no longer used for cloud authentication.
 	const O_SERVER_IP    = 'server_ip';
 	const O_GUEST        = 'guest';
 	const O_GUEST_OPTM   = 'guest_optm';
@@ -156,7 +156,6 @@ class Base extends Root {
 	const O_OPTM_CCSS_SEP_POSTTYPE       = 'optm-ccss_sep_posttype';
 	const O_OPTM_CCSS_SEP_URI            = 'optm-ccss_sep_uri';
 	const O_OPTM_CCSS_SELECTOR_WHITELIST = 'optm-ccss_whitelist';
-	const O_OPTM_CSS_ASYNC_INLINE        = 'optm-css_async_inline';
 	const O_OPTM_CSS_FONT_DISPLAY        = 'optm-css_font_display';
 	const O_OPTM_JS_DEFER                = 'optm-js_defer';
 	const O_OPTM_LOCALIZE                = 'optm-localize';
@@ -465,7 +464,6 @@ class Base extends Root {
 		self::O_OPTM_CCSS_SEP_POSTTYPE => [],
 		self::O_OPTM_CCSS_SEP_URI => [],
 		self::O_OPTM_CCSS_SELECTOR_WHITELIST => [],
-		self::O_OPTM_CSS_ASYNC_INLINE => false,
 		self::O_OPTM_CSS_FONT_DISPLAY => false,
 		self::O_OPTM_JS_DEFER => false,
 		self::O_OPTM_EMOJI_RM => false,
@@ -666,8 +664,8 @@ class Base extends Root {
 			return self::get_option( $id, $default_v );
 		}
 
-		// Preload all options for this blog if not cached.
-		if ( ! isset( self::$_blog_options_cache[ $blog_id ] ) ) {
+		// Reload if a third-party option was registered after this blog's preload.
+		if ( ! isset( self::$_blog_options_cache[ $blog_id ] ) || ! array_key_exists( $id, self::$_blog_options_cache[ $blog_id ] ) ) {
 			self::_preload_blog_options( $blog_id );
 		}
 

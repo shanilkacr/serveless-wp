@@ -178,7 +178,11 @@ class Task extends Root {
 			add_action( $trigger['name'], $trigger['hook'] );
 		}
 
-		// Health: schedule single-event cron when pending request exists
+		// Health: schedule single-event cron when pending request exists.
+		// Until a health check runs the summary does not exist and is not autoloaded, so store an empty one once instead of querying it on every request.
+		if ( false === get_option( Health::name( '_summary' ) ) ) {
+			Health::save_summary( [] );
+		}
 		$health_pending = Health::get_summary( 'pending' );
 		if ( $health_pending ) {
 			$hook = 'litespeed_task_health';

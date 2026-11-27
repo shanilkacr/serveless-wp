@@ -146,7 +146,13 @@ trait Img_Optm_Pull {
 	 * @return bool True if need to pull.
 	 */
 	public static function need_pull() {
-		$tag = (int) self::get_option( self::DB_NEED_PULL );
+		$tag = self::get_option( self::DB_NEED_PULL, null );
+		if ( null === $tag ) {
+			// Task::init() asks on every request and a missing option is not autoloaded, so store the default once; 0 means nothing to pull.
+			self::update_option( self::DB_NEED_PULL, 0 );
+			return false;
+		}
+		$tag = (int) $tag;
 		if ( ! $tag || self::STATUS_NOTIFIED !== $tag ) {
 			return false;
 		}

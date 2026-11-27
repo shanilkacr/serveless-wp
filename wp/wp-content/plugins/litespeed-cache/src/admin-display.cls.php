@@ -175,7 +175,7 @@ class Admin_Display extends Base {
 	 * List of settings with filters and return type.
 	 *
 	 * @since 7.4
-	 * @deprecated 7.7 Use general conf fitlers.
+	 * @deprecated 7.7 Use general conf filters.
 	 *
 	 * @var array<string,array<string,mixed>>
 	 */
@@ -333,6 +333,13 @@ class Admin_Display extends Base {
 				$screen = get_current_screen();
 				if ( $screen && in_array( $screen->id, [ 'toplevel_page_litespeed' ], true ) ) {
 					$classes .= ' litespeed-cache_page_litespeed';
+				}
+				// Stamp the dark/light override from the admin JS cookie so the first paint uses the right mode.
+				if ( ! empty( $_COOKIE['litespeed-dark-preference'] ) ) {
+					$pref = sanitize_key( wp_unslash( $_COOKIE['litespeed-dark-preference'] ) );
+					if ( 'dark' === $pref || 'light' === $pref ) {
+						$classes .= ' litespeed-' . $pref . 'mode';
+					}
 				}
 				return $classes;
 			} );
@@ -865,22 +872,6 @@ class Admin_Display extends Base {
 		} else {
 			self::debug( '❌ No pinned msg content hit' );
 		}
-	}
-
-	/**
-	 * Hooked to the in_widget_form action.
-	 * Appends LiteSpeed Cache settings to the widget edit settings screen.
-	 * This will append the esi on/off selector and ttl text.
-	 *
-	 * @since 1.1.0
-	 *
-	 * @param \WP_Widget $widget     The widget instance (passed by reference).
-	 * @param mixed      $return_val Return param (unused).
-	 * @param array      $instance   The widget instance's settings.
-	 * @return void
-	 */
-	public function show_widget_edit( $widget, $return_val, $instance ) {
-		require LSCWP_DIR . 'tpl/esi_widget_edit.php';
 	}
 
 	/**

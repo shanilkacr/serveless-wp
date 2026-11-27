@@ -16,6 +16,8 @@ use LiteSpeed\API;
 use LiteSpeed\Base;
 use LiteSpeed\Control;
 use LiteSpeed\ESI;
+use Automattic\WooCommerce\Internal\OrderReviews\Endpoint;
+use Automattic\WooCommerce\Utilities\FeaturesUtil;
 
 /**
  * WooCommerce third-party integration for LiteSpeed Cache.
@@ -101,6 +103,7 @@ class WooCommerce extends Base {
 		add_action('delete_term_relationships', [ $this, 'delete_rel' ], 10, 2);
 
 		if ( $this->esi_enabled ) {
+			add_action( 'template_redirect', [ $this, 'bypass_order_review_gate_for_nonce' ], 0 );
 			add_action( 'template_redirect', [ $this, 'register_templates' ] );
 			add_action('litespeed_esi_load-storefront-cart-header', [ $this, 'load_cart_header' ]);
 			add_action('litespeed_esi_load-widget', [ $this, 'register_post_view' ]);
@@ -134,6 +137,32 @@ class WooCommerce extends Base {
 				}
 			);
 		}
+	}
+
+	/**
+	 * Let verified nonce fragments reach the ESI template on order review pages.
+	 *
+	 * ESI requests lack the parent request's order key, so WooCommerce's gate
+	 * would otherwise render a 404 before the nonce template can run. Only the
+	 * GET template branch is bypassed; feed and trackback requests retain the gate.
+	 *
+	 * @return void
+	 */
+	public function bypass_order_review_gate_for_nonce() {
+		if ( ! isset( $_SERVER['REQUEST_METHOD'] ) || 'GET' !== $_SERVER['REQUEST_METHOD'] || is_feed() || is_trackback() ) {
+			return;
+		}
+
+		if ( ! $this->esi_enabled || ! defined( 'LSCACHE_IS_ESI' ) || 'nonce' !== LSCACHE_IS_ESI || ! ESI::cls()->is_valid_request() ) {
+			return;
+		}
+
+		if ( ! function_exists( 'wc_get_container' ) || ! class_exists( Endpoint::class ) || ! is_callable( [ FeaturesUtil::class, 'feature_is_enabled' ] ) || ! FeaturesUtil::feature_is_enabled( 'customer_review_request' ) ) {
+			return;
+		}
+
+		$endpoint = wc_get_container()->get( Endpoint::class );
+		remove_action( 'template_redirect', [ $endpoint, 'gate_request' ], 10 );
 	}
 
 	/**
@@ -884,8 +913,14 @@ class WooCommerce extends Base {
 			return;
 		}
 
-		if ( ! isset( $post_id ) || false === wc_get_product( $post_id ) ) {
+		$product = isset( $post_id ) ? wc_get_product( $post_id ) : false;
+		if ( ! $product ) {
 			return;
+		}
+
+		// A variation's post type is not public; its product page lives under the parent.
+		if ( $product->is_type( 'variation' ) && $product->get_parent_id() ) {
+			do_action( 'litespeed_purge_post', $product->get_parent_id() );
 		}
 
 		$cats = $this->get_cats( $post_id );

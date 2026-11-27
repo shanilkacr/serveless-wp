@@ -46,11 +46,27 @@ class Purge extends Base {
 	 */
 	protected $_purge_single = false;
 
+	/**
+	 * Blog IDs whose purge queues this CLI process stored, so shutdown can kick each one; per blog and queue name, true once a Purge All was saved there.
+	 *
+	 * @var array<int,array<string,bool>>
+	 */
+	private static $_cli_queued_blogs = [];
+
 	const X_HEADER             = 'X-LiteSpeed-Purge';
 	const X_HEADER2            = 'X-LiteSpeed-Purge2';
 	const DB_QUEUE             = 'queue';
 	const DB_QUEUE2            = 'queue2';
 	const UPGRADE_PURGE_HEADER = 'X-LiteSpeed-Purge2: public,*';
+
+	/**
+	 * Blog IDs whose purge queue this CLI process stored.
+	 *
+	 * @return array<int,int>
+	 */
+	public static function cli_queued_blogs() {
+		return array_keys( self::$_cli_queued_blogs );
+	}
 
 	/**
 	 * Persist a full page-cache invalidation before an upgrade version is committed.
@@ -553,7 +569,13 @@ class Purge extends Base {
 			return false;
 		}
 
-		if ( Router::opcache_restricted( __FILE__ ) ) {
+		// PHP applies restrict_api to the SAPI entry script, not this included plugin file.
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Compare the exact SAPI path; sanitizing it would change PHP's prefix check.
+		$script = isset( $_SERVER['SCRIPT_FILENAME'] ) ? wp_unslash( $_SERVER['SCRIPT_FILENAME'] ) : '';
+		if ( 'cli' === PHP_SAPI && $script ) {
+			$script = realpath( $script );
+		}
+		if ( Router::opcache_restricted( $script ) ) {
 			self::debug( '❌ Failed to reset OPcache due to OPcache is restricted. File requesting the clear is not allowed.' );
 
 			if ( ! $silence ) {
@@ -572,7 +594,7 @@ class Purge extends Base {
 			if ( ! $silence ) {
 				$msg = __( 'Reset the OPcache failed.', 'litespeed-cache' );
 				if ( ! defined( 'LITESPEED_PURGE_SILENT' ) ) {
-					Admin_Display::success( $msg );
+					Admin_Display::error( $msg );
 				}
 			}
 
@@ -670,7 +692,10 @@ class Purge extends Base {
 
 		$tags = $this->_prepend_bid( $tags );
 
-		if ( ! array_diff( $tags, $purge2 ? $this->_pub_purge2 : $this->_pub_purge ) ) {
+		// In CLI, '*' carries no blog ID, so a Purge All after switch_to_blog() must still store that blog's own queue, once per queue.
+		$queue            = $purge2 ? self::DB_QUEUE2 : self::DB_QUEUE;
+		$is_cli_purge_all = defined( 'LITESPEED_CLI' ) && is_multisite() && in_array( '*', $tags, true ) && empty( self::$_cli_queued_blogs[ get_current_blog_id() ][ $queue ] );
+		if ( ! $is_cli_purge_all && ! array_diff( $tags, $purge2 ? $this->_pub_purge2 : $this->_pub_purge ) ) {
 			return;
 		}
 
@@ -682,12 +707,23 @@ class Purge extends Base {
 
 		self::debug( 'added ' . implode( ',', $tags ) . ( $purge2 ? ' [Purge2]' : '' ), 8 );
 
+		/**
+		 * Fires when _add() extends the public purge list, before header delivery or queue storage.
+		 *
+		 * @since 7.9.3
+		 * @param array<int,string> $tags   Requested tags, including existing tags, with the blog ID prefix ('*' for Purge All).
+		 * @param bool              $purge2 Whether they go out via X-LiteSpeed-Purge2.
+		 */
+		do_action( 'litespeed_purged', $tags, $purge2 );
+
 		// Send purge header immediately or queue if headers already sent or delayed.
 		$curr_built = $this->_build( $purge2 );
 
 		if ( defined( 'LITESPEED_CLI' ) ) {
 			// Can't send, already has output, need to save and wait for next run
-			self::update_option($purge2 ? self::DB_QUEUE2 : self::DB_QUEUE, $curr_built);
+			$saved = self::update_option( $queue, $curr_built );
+			// Only a saved Purge All stops later ones on this blog and queue; a failed save or a tag-only queue does not.
+			self::$_cli_queued_blogs[ get_current_blog_id() ][ $queue ] = ! empty( self::$_cli_queued_blogs[ get_current_blog_id() ][ $queue ] ) || ( $saved && in_array( '*', $tags, true ) );
 			self::debug( 'CLI request, queue stored: ' . $curr_built );
 		} else {
 			if ( ! headers_sent() ) {
@@ -1304,8 +1340,8 @@ class Purge extends Base {
 			return $tags;
 		}
 
-		// Purge All: maybe reset crawler.
-		if ( ! $is_private && $this->conf( self::O_CRAWLER ) ) {
+		// Purge All: maybe reset crawler. Skip while switched: the Crawler singleton is bound to the blog it was built on.
+		if ( ! $is_private && ! ( is_multisite() && ms_is_switched() ) && $this->conf( self::O_CRAWLER ) ) {
 			Crawler::cls()->reset_pos();
 		}
 
@@ -1364,25 +1400,35 @@ class Purge extends Base {
 	 * @return array<int,string>
 	 */
 	private function _get_purge_tags_by_post( $post_id ) {
-		if ( $this->conf( self::O_PURGE_POST_ALL ) ) {
+		// Built-in templates and styles can affect public pages without a public URL.
+		$the_post          = get_post( $post_id );
+		$post_type         = $the_post ? $the_post->post_type : '';
+		$post_type_obj     = $post_type ? get_post_type_object( $post_type ) : null;
+		$skip_non_viewable = false;
+		if ( $post_type_obj && ! $post_type_obj->_builtin && ! is_post_type_viewable( $post_type_obj ) ) {
+			// Non-public CPTs purge only their own tag; return false to purge related pages too.
+			$skip_non_viewable = apply_filters( 'litespeed_purge_post_skip_non_viewable', true, $post_id );
+		}
+
+		if ( ! $skip_non_viewable && $this->conf( self::O_PURGE_POST_ALL ) ) {
 			return [ '*' ];
 		}
 
+		// Integrations must still be able to invalidate their own dependencies.
 		do_action( 'litespeed_api_purge_post', $post_id );
 
 		$purge_tags = [];
 
 		// Post itself.
 		$purge_tags[] = Tag::TYPE_POST . $post_id;
-
-		$post_status = get_post_status( $post_id );
-		if ( function_exists( 'is_post_status_viewable' ) && is_post_status_viewable( $post_status ) ) {
-			$purge_tags[] = Tag::get_uri_tag( wp_make_link_relative( get_permalink( $post_id ) ) );
+		if ( $skip_non_viewable ) {
+			return $purge_tags;
 		}
 
-		// Avoid overriding global $post: use explicit post object.
-		$the_post  = get_post( $post_id );
-		$post_type = $the_post ? $the_post->post_type : '';
+		// Internal post permalinks can collapse to the homepage when query strings are removed.
+		if ( function_exists( 'is_post_publicly_viewable' ) && is_post_publicly_viewable( $post_id ) ) {
+			$purge_tags[] = Tag::get_uri_tag( wp_make_link_relative( get_permalink( $post_id ) ) );
+		}
 
 		// Widgets: recent posts.
 		global $wp_widget_factory;
@@ -1433,10 +1479,9 @@ class Purge extends Base {
 			$purge_tags[] = Tag::TYPE_AUTHOR . get_post_field( 'post_author', $post_id );
 		}
 
-		// Post type archives.
+		// Only purge archives here; the bare post type tag also matches every singular page.
 		if ( $this->conf( self::O_PURGE_POST_POSTTYPE ) && get_post_type_archive_link( $post_type ) ) {
 			$purge_tags[] = Tag::TYPE_ARCHIVE_POSTTYPE . $post_type;
-			$purge_tags[] = $post_type;
 		}
 
 		if ( $this->conf( self::O_PURGE_POST_FRONTPAGE ) ) {

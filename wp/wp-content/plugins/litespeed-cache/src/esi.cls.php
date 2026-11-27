@@ -46,6 +46,12 @@ class ESI extends Root {
 	 * @since  4.0 Change to be after Vary init in hook 'after_setup_theme'
 	 */
 	public function init() {
+		// Widget ESI settings are registered before the AJAX bypass below: the classic widgets screen and the Customizer save through admin-ajax, the block editor through REST.
+		if ( $this->cls( 'Router' )->esi_enabled() ) {
+			add_action( 'in_widget_form', [ $this, 'widget_form' ], 100, 3 );
+			add_filter( 'widget_update_callback', __NAMESPACE__ . '\Admin_Settings::validate_widget_save', 10, 4 );
+		}
+
 		/**
 		 * Bypass ESI related funcs if disabled ESI to fix potential DIVI compatibility issue
 		 *
@@ -80,6 +86,23 @@ class ESI extends Root {
 		$this->_transform_nonce();
 
 		!defined('LITESPEED_ESI_INITED') && define('LITESPEED_ESI_INITED', true);
+	}
+
+	/**
+	 * Output the LiteSpeed ESI settings inside a widget form.
+	 *
+	 * Hooked to the in_widget_form action.
+	 *
+	 * @since 7.9.4
+	 * @access public
+	 *
+	 * @param \WP_Widget $widget     The widget instance (passed by reference).
+	 * @param mixed      $return_val Return param (unused).
+	 * @param array      $instance   The widget instance's settings.
+	 * @return void
+	 */
+	public function widget_form( $widget, $return_val, $instance ) {
+		require LSCWP_DIR . 'tpl/esi_widget_edit.php';
 	}
 
 	/**
@@ -566,7 +589,8 @@ class ESI extends Root {
 		// Convert to string to avoid html chars filter when using
 		// Will reverse the buffer when output in self::finalize()
 		if ($preserved) {
-			$hash                            = md5($output);
+			// Bind the marker to the identity the nonce itself is bound to, so one learned in another session never matches here.
+			$hash                            = md5( $this->_preserve_identity( isset( $params['action'] ) ? $params['action'] : -1 ) . $output );
 			$this->_esi_preserve_list[$hash] = $output;
 			self::debug("Preserved to $hash");
 
@@ -574,6 +598,29 @@ class ESI extends Root {
 		}
 
 		return $output;
+	}
+
+	/**
+	 * Secret, session-bound prefix for preserved ESI markers.
+	 *
+	 * @since 7.9.4
+	 * @access private
+	 *
+	 * @param mixed $action Nonce action, or -1.
+	 * @return string
+	 */
+	private function _preserve_identity( $action ) {
+		// Pluggable functions are missing when a nonce is created while plugins are still loading; such a marker is only keyed by the site.
+		if ( ! function_exists( 'wp_get_current_user' ) || ! function_exists( 'wp_hash' ) ) {
+			return md5( (string) $this->conf( Base::HASH ) );
+		}
+		$uid = get_current_user_id();
+		if ( ! $uid ) {
+			/** This filter is documented in wp-includes/pluggable.php */
+			$uid = apply_filters( 'nonce_user_logged_out', $uid, $action );
+		}
+
+		return wp_hash( $uid . '|' . wp_get_session_token(), 'nonce' );
 	}
 
 	/**
@@ -1213,6 +1260,15 @@ class ESI extends Root {
 		}
 
 		$keys = array_keys($this->_esi_preserve_list);
+
+		// Headers are not expanded: a marker sent as X-WP-Nonce is neither a nonce nor safe to disclose.
+		if ( ! headers_sent() ) {
+			foreach ( headers_list() as $header ) {
+				if ( 0 === stripos( $header, 'X-WP-Nonce:' ) && isset( $this->_esi_preserve_list[ trim( substr( $header, 11 ) ) ] ) ) {
+					header_remove( 'X-WP-Nonce' );
+				}
+			}
+		}
 
 		self::debug('[ESI] replacing preserved blocks', $keys);
 

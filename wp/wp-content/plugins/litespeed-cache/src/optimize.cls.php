@@ -14,13 +14,10 @@ defined('WPINC') || exit();
 class Optimize extends Base {
 	const LOG_TAG           = '🎢';
 
-	const LIB_FILE_CSS_ASYNC     = 'assets/js/css_async.min.js';
 	const LIB_FILE_WEBFONTLOADER = 'assets/js/webfontloader.min.js';
 	const LIB_FILE_JS_DELAY      = 'assets/js/js_delay.min.js';
 
 	const ITEM_TIMESTAMP_PURGE_CSS = 'timestamp_purge_css';
-
-	const DUMMY_CSS_REGEX = "#<link [ \w='\"/-]*id=['\"]litespeed-cache-dummy-css['\"][ \w='\"/-]*href=['\"].+assets/css/litespeed-dummy\.css[?\w.=-]*['\"][ \w='\"/-]*>#isU";
 
 	private $content;
 	private $content_ori;
@@ -115,7 +112,17 @@ class Optimize extends Base {
 
 		add_filter('litespeed_buffer_finalize', array( $this, 'finalize' ), 20);
 
-		// Inject a dummy CSS file to control final optimized data location in <head>
+		// Wait for compatibility checks on wp, but enqueue before normal theme styles.
+		add_action('wp_enqueue_scripts', [ $this, 'enqueue_dummy_css' ], 0);
+	}
+
+	/**
+	 * Enqueue the head insertion marker only while optimization is enabled.
+	 */
+	public function enqueue_dummy_css() {
+		if (defined('LITESPEED_NO_OPTM') && LITESPEED_NO_OPTM) {
+			return;
+		}
 		wp_enqueue_style(Core::PLUGIN_NAME . '-dummy', LSWCP_PLUGIN_URL . 'assets/css/litespeed-dummy.css');
 	}
 
@@ -191,10 +198,10 @@ class Optimize extends Base {
 	public function finalize( $content ) {
 		$content = $this->_finalize($content);
 		// Fallback to replace dummy css placeholder
-		$masked = Utility::html_mask( $content, [ 'link' ] );
-		if ( null !== $masked && preg_match_all( self::DUMMY_CSS_REGEX, $masked, $matches ) ) {
+		$dummy = $this->_find_dummy_css( $content );
+		if ( $dummy ) {
 			self::debug('Fallback to drop dummy CSS');
-			$content = Utility::html_replace( $matches[0], '', $content );
+			$content = Utility::html_replace( $dummy, '', $content );
 		}
 		return $content;
 	}
@@ -395,17 +402,6 @@ class Optimize extends Base {
 			self::debug2('Inline JS defer vars', $this->_var_preserve_js);
 		}
 
-		// Append async compatibility lib to head
-		if ($this->cfg_css_async) {
-			// Inline css async lib
-			if ($this->conf(self::O_OPTM_CSS_ASYNC_INLINE)) {
-				$this->html_head .= $this->_build_js_inline(File::read(LSCWP_DIR . self::LIB_FILE_CSS_ASYNC), true);
-			} else {
-				$css_async_lib_url = LSWCP_PLUGIN_URL . self::LIB_FILE_CSS_ASYNC;
-				$this->html_head  .= $this->_build_js_tag($css_async_lib_url); // Don't exclude it from defer for now
-			}
-		}
-
 		/**
 		 * Handle google fonts async
 		 * This will result in a JS snippet in head, so need to put it in the end to avoid being replaced by JS parser
@@ -488,6 +484,33 @@ class Optimize extends Base {
 	}
 
 	/**
+	 * Find real placeholder links by their reserved ID, regardless of rewritten attributes.
+	 *
+	 * @param string $html Page HTML.
+	 * @return array
+	 */
+	private function _find_dummy_css( $html ) {
+		// Most buffers no longer contain the marker after head insertion.
+		if ( false === stripos( $html, 'litespeed-cache-dummy-css' ) ) {
+			return [];
+		}
+		$masked = Utility::html_mask( $html, [ 'link' ] );
+		$dummy = [];
+		if ( null !== $masked && preg_match_all( '#<link(?=[\s/>])' . Utility::HTML_ATTR_PATTERN . '>#i', $masked, $matches ) ) {
+			foreach ( $matches[0] as $link ) {
+				if ( false === stripos( $link, 'litespeed-cache-dummy-css' ) ) {
+					continue;
+				}
+				$attrs = array_change_key_case( Utility::parse_attr( $link ), CASE_LOWER );
+				if ( isset( $attrs['id'] ) && 0 === strcasecmp( 'litespeed-cache-dummy-css', $attrs['id'] ) ) {
+					$dummy[] = $link;
+				}
+			}
+		}
+		return $dummy;
+	}
+
+	/**
 	 * Insert generated head resources at an actual element boundary.
 	 *
 	 * @param string $html      Generated markup.
@@ -495,12 +518,13 @@ class Optimize extends Base {
 	 * @return void
 	 */
 	private function _insert_html_head( $html, $use_dummy ) {
-		$masked = Utility::html_mask( $this->content, [ 'head', 'meta', 'link' ] );
-		if ( null === $masked ) {
+		$dummy = $use_dummy ? $this->_find_dummy_css( $this->content ) : [];
+		if ( $dummy ) {
+			$this->content = Utility::html_replace( $dummy[0], $html, $this->content, 1 );
 			return;
 		}
-		if ( $use_dummy && preg_match( self::DUMMY_CSS_REGEX, $masked, $matches ) ) {
-			$this->content = Utility::html_replace( $matches[0], $html, $this->content, 1 );
+		$masked = Utility::html_mask( $this->content, [ 'head', 'meta' ] );
+		if ( null === $masked ) {
 			return;
 		}
 		if ( preg_match( '#<meta\s+charset(?=[\s=])' . Utility::HTML_ATTR_PATTERN . '>#i', $masked, $matches ) || preg_match( '#<head(?=[\s/>])' . Utility::HTML_ATTR_PATTERN . '>#i', $masked, $matches ) ) {
@@ -745,7 +769,7 @@ class Optimize extends Base {
 						$attrs   = !empty($src_info['attrs']) ? $src_info['attrs'] : '';
 						$snippet = $this->_js_inline_defer($src_info['src'], $attrs) ?: $html_list[$key];
 					} else {
-						$code    = Optimizer::minify_js($src_info['src']);
+						$code    = $this->_minify_inline_js( $src_info['src'] );
 						$snippet = str_replace($src_info['src'], $code, $html_list[$key]);
 					}
 				}
@@ -766,7 +790,10 @@ class Optimize extends Base {
 				}
 			}
 
-			$snippet         = str_replace("<$tag ", '<' . $tag . ' data-optimized="1" ', $snippet);
+			// Mark the opening tag only; the same text inside an inline body is data.
+			if ( 0 === strpos( $snippet, "<$tag " ) ) {
+				$snippet = '<' . $tag . ' data-optimized="1" ' . substr( $snippet, strlen( $tag ) + 2 );
+			}
 			$html_list[$key] = $snippet;
 		}
 
@@ -864,7 +891,7 @@ class Optimize extends Base {
 			self::debug( 'JS parsing skipped: ambiguous HTML or PCRE error ' . preg_last_error() );
 			return [ $src_list, $html_list ];
 		}
-		preg_match_all('#<script(' . Utility::HTML_ATTR_PATTERN . ')>(.*?)</script(?=[\s/>])' . Utility::HTML_ATTR_PATTERN . '>#is', $content, $matches, PREG_SET_ORDER);
+		preg_match_all('#<script(' . Utility::HTML_ATTR_PATTERN . ')>([^<]*+(?:<(?!/script(?=[\s/>])' . Utility::HTML_ATTR_PATTERN . '>)[^<]*+)*+)</script(?=[\s/>])' . Utility::HTML_ATTR_PATTERN . '>#is', $content, $matches, PREG_SET_ORDER);
 		foreach ($matches as $match) {
 			$attrs = empty($match[1]) ? [] : Utility::parse_attr($match[1]);
 			if ( isset( $attrs['nomodule'] ) ) {
@@ -983,7 +1010,7 @@ class Optimize extends Base {
 		// Minify JS first
 		if (!$minified) {
 			// && $this->cfg_js_defer !== 2
-			$con = Optimizer::minify_js($con);
+			$con = $this->_minify_inline_js( $con );
 		}
 
 		if (!$con) {
@@ -1004,6 +1031,21 @@ class Optimize extends Base {
 		}
 
 		return '<script' . $attrs . ' src="data:text/javascript;base64,' . base64_encode($con) . '" defer></script>';
+	}
+
+	/**
+	 * Minify an inline script body, keeping the original when the result could end or re-open the script element.
+	 *
+	 * @since 7.9.4
+	 * @access private
+	 *
+	 * @param string $code Inline script body.
+	 * @return string
+	 */
+	private function _minify_inline_js( $code ) {
+		$minified = Optimizer::minify_js( $code );
+		// Removing whitespace can turn `a < /script>/` into a real end tag, or create `<!--` / `<script` markers.
+		return Utility::script_body_unsafe( $code, $minified ) ? $code : $minified;
 	}
 
 	/**
@@ -1063,7 +1105,7 @@ class Optimize extends Base {
 			self::debug( 'CSS parsing skipped: ambiguous HTML or PCRE error ' . preg_last_error() );
 			return [ $src_list, $html_list ];
 		}
-		preg_match_all('#<link\s+(' . Utility::HTML_ATTR_PATTERN . ')>|<style(' . Utility::HTML_ATTR_PATTERN . ')>(.*?)</style(?=[\s/>])' . Utility::HTML_ATTR_PATTERN . '>#is', $content, $matches, PREG_SET_ORDER);
+		preg_match_all('#<link\s+(' . Utility::HTML_ATTR_PATTERN . ')>|<style(' . Utility::HTML_ATTR_PATTERN . ')>([^<]*+(?:<(?!/style(?=[\s/>])' . Utility::HTML_ATTR_PATTERN . '>)[^<]*+)*+)</style(?=[\s/>])' . Utility::HTML_ATTR_PATTERN . '>#is', $content, $matches, PREG_SET_ORDER);
 
 		foreach ($matches as $match) {
 			// to avoid multiple replacement
@@ -1288,6 +1330,11 @@ class Optimize extends Base {
 			return $delayed;
 		}
 
-		return str_replace('></script>', ' defer data-deferred="1"></script>', $ori);
+		// Append to the opening tag only; the same bytes inside a quoted attribute value are data.
+		if ( ! preg_match( '~\A<script' . Utility::HTML_ATTR_PATTERN . '(?=></script>\z)~i', $ori, $opening ) ) {
+			return false;
+		}
+
+		return $opening[0] . ' defer data-deferred="1"></script>';
 	}
 }

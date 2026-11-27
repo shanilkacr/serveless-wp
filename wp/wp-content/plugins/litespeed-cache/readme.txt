@@ -4,7 +4,7 @@ Tags: caching, optimize, performance, pagespeed, seo, image optimize, object cac
 Requires at least: 6.0
 Requires PHP: 7.4
 Tested up to: 7.1
-Stable tag: 7.9.2
+Stable tag: 7.9.4
 License: GPLv3
 License URI: http://www.gnu.org/licenses/gpl.html
 
@@ -72,6 +72,7 @@ LiteSpeed Cache for WordPress is compatible with ClassicPress.
 * [HTTP/3 & QUIC](https://www.litespeedtech.com/http3-faq) support
 * ESI (Edge Side Includes) support<sup>*</sup>
 * Widgets and Shortcodes as ESI blocks<sup>*</sup> (requires Classic Widgets plugin for WP 5.8+)
+* [Serve Stale](https://docs.litespeedtech.com/lscache/lscwp/cache/#serve-stale), similar to stale-while-revalidate
 
 <sup>*</sup> Feature not available in OpenLiteSpeed
 
@@ -264,6 +265,69 @@ Please don't report a suspected vulnerability in this support forum. Reporting d
 
 = 8.0 - Coming soon 2026 =
 * 🌱**OptiMax** OptiMax to maximize the page score.
+
+= 7.9.4 - Nov 24 2026 =
+* **Object Cache** Flush once after the backend was unreachable. (PR#1069)
+* **GUI** Fixed a dark mode flash on load. (RyansGit PR#983)
+* **Optimize** `litespeed_comment` now also hides the HTML Minify comment. (Tobolo #1093 PR#1094)
+* **3rd** Kadence Blocks: saving a part purges related pages again. (Tobolo #1090 PR#1091)
+* **Htaccess** Deactivation now removes the LiteSpeed blocks with their markers. (PR#1068)
+* **Cache** Drop Query String now strips its arguments from the request too.
+* **Core** Saved three option queries per request. (Tobolo PR#1095 PR#1096)
+* **Htaccess** Deactivation keeps user rules after an unclosed LiteSpeed block.
+* **Object Cache** A failed Memcached flush now retries on the next request.
+* **3rd** Elementor: saving a Theme Builder template purges all again. (PR#1016)
+* **Object Cache** A Redis connect error no longer leaves the error handler installed. (vbakkenes #1013 PR#1014)
+* **Page Optimize** Fixed slow page generation with multiline SVG/MathML attributes. (#1098)
+* **Core** Prevented cloud request files from remaining after uninstall.
+* **Htaccess** Stopped orphan-rule notices for a parent WordPress installation.
+* **LQIP** Fixed request-time warnings when generating local placeholders.
+* **Cloud** Legacy Domain Key sites now require manual QUIC.cloud activation.
+* **Page Optimize** Preserved JS regexes inside arrays and skipped re-minifying versioned minified assets. (#908)
+* **Page Optimize** JS Delay now runs late window load listeners after delayed scripts. (MahdiAkrami01 #629)
+* **Page Optimize** The empty placeholder stylesheet is no longer left in pages. (#1071)
+* **Crawler** The Server IP port test now falls back to port 80 when port 443 does not serve the site.
+* **Image Optimize** Media Library can now optimize a single image.
+* **Page Optimize** CSS Async no longer loads the legacy preload polyfill; the Inline CSS Async Lib setting is removed. (PR#729)
+* **Misc** CI now also lints PHP syntax under PHP 7.4. (Viktor Szépe PR#873)
+* **ESI** Fixed widget ESI settings not showing or saving in classic widgets. (PR#775)
+* **Media** Fixed Auto Rescale Original Images breaking metadata of images in older folders. (giangel84 PR#1101)
+* **Media** Batch rescale no longer saves a `./` path prefix for images in the uploads root.
+* **Purge** Fixed the OPcache `restrict_api` check always blocking the reset.
+* **Debug** Forced and constant option values are no longer written to the debug log.
+* **Core** Fixed a fatal error when a folder becomes unreadable during cleanup.
+* **Cloud** Avoided a PHP 8.6 deprecation notice in signed callback validation. (dhrupo PR#1097)
+* **3rd** WooCommerce: ESI nonces now work on the order review page. (PR#1102)
+* **CDN** Fixed file type rewriting altering page markup when an Original URL has a wildcard.
+* **Media** WebP/AVIF replacement in `data-settings` now only touches real attributes.
+* **ESI** Nonce placeholders are now bound to the visitor session.
+* **Page Optimize** HTML and inline JS minify can no longer turn page text into tags.
+* **Media** VPI preload and iframe lazy load now only rewrite real elements.
+* **Cloud** Supported the new QUIC.cloud usage format with unified optimization units.
+* **Cloud** Exhausted credit is no longer rechecked every hour.
+* **CLI** Multisite purges now reach every touched blog. (PR#1103)
+* **3rd** WCML: guests now get the right currency cache from the first page view. (PR#1107)
+* **Vary** Sub-resource requests no longer change the vary cookie.
+* **Media** WebP/AVIF replacement now covers WooCommerce product gallery zoom and lightbox images. (PR#1105)
+
+= 7.9.3 - Nov 3 2026 =
+* **Object Cache** Fixed repeated database queries when Memcached rejects oversized alloptions values. (Peter Wells #1076)
+* **Core** Moved uninstall handling to uninstall.php to avoid unnecessary option reads on normal requests. (Contributolo PR#1078)
+* **Purge** Added the litespeed_purged action for public purge tag additions. (Contributolo PR#1072)
+* **Page Optimize** Prioritized the front page in CCSS, UCSS, VPI and OptiMax queues and corrected queue capacity handling. (Faisal Ahammad PR#1064)
+* **Guest Mode** Fixed PHP 8.5 deprecation warnings in CIDR checks. (deltafactory PR#1080)
+* **Conf** Fixed WooCommerce option warnings with shared multisite settings. (lhero-org #1077, dassels43)
+* **Page Optimize** Kept CSS/JS optimization on pages with a very large inline style or script block that previously exceeded the PCRE limit and skipped optimization. (ventio, PR#1081)
+* **Crawler** Limited automatic HTTP fallback to connection failures during the Server IP HTTPS test. (unsetfocus #1074)
+* **Core** Fixed constant rewrites of the shared static folder .htaccess on subdirectory multisite. (#869638)
+* **Purge** Fixed excessive cache purges from non-public custom post types. (markhysted #1044, models118)
+* **Purge** Purge Post Type Archive now purges only the post type archive page (e.g. the Shop page), instead of also purging every post of that type. (John-belt #310, models118)
+* **Cloud** Signed the QUIC.cloud link request.
+* **Cloud** Cleared the stored main domain when the QUIC.cloud registration is reset, so a deactivated site no longer reports itself as an alias of an old domain.
+* **Heartbeat** Kept the configured interval on post lists and editors. (#1082)
+* **3rd** Perfmatters script manager no longer disables ESI site-wide; it is now skipped only on ESI requests. (VIP PR#1055)
+* **Cache** Fixed mobile cache vary detection behind LiteSpeed ADC on Apache origins. (PR#1088)
+* **VPI** Preloaded responsive VPI images with their srcset and sizes, so the browser fetches the same candidate the page renders. (PR#1089)
 
 = 7.9.2 - Oct 20 2026 =
 * **Image Optimize** Fixed thumbnails skipped for images in the uploads root. (AsFLY-902 PR#1059)
